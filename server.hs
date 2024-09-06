@@ -114,14 +114,12 @@ instance JSON Update where
               ]
 
 instance JSON Change where
-    readJSON (JSRational _ i)                       = return (Skip (round i))
-    readJSON (JSArray [JSRational _ i])             = return (Change (round i) "")
-    readJSON (JSArray [JSRational _ i, JSString s]) = return (Change (round i) (fromJSString s))
-    readJSON _ = fail "Invalid Change representation"
+    readJSON (JSRational _ i)              = return (Skip (round i))
+    readJSON (JSArray (JSRational _ i:ss)) = return (Change (round i) (unlines [fromJSString s | JSString s <- ss]))
+    readJSON json = fail "Invalid Change representation"
 
     showJSON (Skip i)      = showJSON i
-    showJSON (Change i "") = showJSON [i]
-    showJSON (Change i s)  = showJSON [showJSON i, showJSON s]
+    showJSON (Change i s)  = showJSON (showJSON i : [showJSON l | l <- lines s])
 
 emptyDocument = Document "" []
 
