@@ -174,7 +174,7 @@ transform1 (Update cid1 as) (Update cid2 bs) =
         EQ -> case loop as bs of
                 (as,bs) -> (skip (length s2) as,change m s2 bs)
         GT -> case loop (Skip (n-m) : as) bs of
-                (as,bs) -> (skip (length s2) as,change n s2 bs)
+                (as,bs) -> (skip (length s2) as,change m s2 bs)
     loop (Change n s1 : as) (Skip m : bs) =
       case compare n m of
         LT -> case loop as (Skip (m-n) : bs) of
@@ -186,11 +186,11 @@ transform1 (Update cid1 as) (Update cid2 bs) =
     loop (Change n s1 : as) (Change m s2 : bs) =
       case compare n m of
         LT -> case loop as (Change (m-n) s2 : bs) of
-                (as,bs) -> (change 0 s1 as,bs)
+                (as,bs) -> (change 0 s1 as,skip (length s1) bs)
         EQ -> case loop as bs of
-                (as,bs) -> (change 0 s1 as,change 0 s2 bs)
+                (as,bs) -> (skip (length s2) (change 0 s1 as),skip (length s1) (change 0 s2 bs))
         GT -> case loop (Change (n-m) s1 : as) bs of
-                (as,bs) -> (as,change 0 s2 bs)
+                (as,bs) -> (skip (length s2) as,change 0 s2 bs)
 
     skip n (Skip m : as) = Skip (n+m) : as
     skip n           as  = Skip n     : as
