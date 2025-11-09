@@ -3,6 +3,7 @@ import OpenSSL
 import Text.JSON
 import Control.Concurrent.MVar
 import Control.Monad(forM_)
+import Data.List
 
 main = do
     stateRef <- newMVar (emptyDocument,[])
@@ -58,19 +59,18 @@ serverMain stateRef rq = do
 
     pushUpdates version updates = do
       (doc,pending) <- takeMVar stateRef
-      let doc'@(Document text updates') = applyUpdates updates doc
-      let x = version + 1 ::Int 
-      if null updates
+      let (doc',updates',new_updates) = apply version updates doc
+      if null updates'
         then return ()
         else forM_ pending $ \var -> do
-               putMVar var (drop version updates)
+               putMVar var updates'
       putMVar stateRef (doc',[])
       return
         (Response
            { rspCode = 200
            , rspReason = "OK"
            , rspHeaders = [Header HdrContentType "application/json; charset=UTF8"]
-           , rspBody = encode True
+           , rspBody = encode new_updates
            })
 
     pullUpdates version = do
@@ -97,7 +97,7 @@ serverMain stateRef rq = do
 
 
 type ClientID = String
-data Change   = Skip Int | Change Int String
+data Change   = Skip {-# UNPACK #-} !Int | Change {-# UNPACK #-} !Int String deriving Show
 data Update   = Update ClientID [Change]
 data Document = Document String [Update]
 
@@ -123,14 +123,77 @@ instance JSON Change where
 
 emptyDocument = Document "" []
 
-applyUpdates :: [Update] -> Document -> Document
-applyUpdates new_updates (Document content updates) = 
-  Document (foldl applyUpdate content new_updates)
-           (updates++new_updates)
+apply :: Int -> [Update] -> Document -> (Document,[Update],[Update])
+apply version new_updates (Document content updates) =
+  let updates0 = drop version updates
+      (new_updates',updates0') = transform new_updates updates0
+  in (Document (foldl update content new_updates')
+               (updates++new_updates')
+     ,new_updates'
+     ,updates0'
+     )
   where
-    applyUpdate content (Update _ changes) = 
-      let (_,_,content') = foldl applyChange (0,0,content) changes
-      in content'
+    update content (Update _ changes) =
+      let (xs,ys) = foldl change ("",content) changes
+      in reverse xs ys
 
-    applyChange (posA,posB,content) (Skip i)     = (posA+i,posB+i,content)
-    applyChange (posA,posB,content) (Change i s) = (posA+i,posB+length s,take posB content ++ s ++ drop (posB + i) content)
+    change (xs,ys) (Skip i)     = skip xs ys i
+    change (xs,ys) (Change i s) = (reverse s xs,drop i ys)
+
+    skip xs    ys  0 = (xs,ys)
+    skip xs    []  i = (xs,[])
+    skip xs (y:ys) i = skip (y:xs) ys (i-1)
+
+    reverse []     ys = ys
+    reverse (x:xs) ys = reverse xs (x:ys)
+
+transform :: [Update] -> [Update] -> ([Update],[Update])
+transform  = mapAccumL (\us1 u2 -> swap (mapAccumL (flip transform1) u2 us1))
+  where
+    swap (x,y) = (y,x)
+
+transform1 :: Update -> Update -> (Update,Update)
+transform1 (Update cid1 as) (Update cid2 bs) =
+  case loop as bs of
+    (as,bs) -> (Update cid1 as, Update cid2 bs)
+  where
+    loop as            []            = (as,[])
+    loop []            bs            = ([],bs)
+    loop (Skip n : as) (Skip m : bs) =
+      case compare n m of
+        LT -> case loop as (Skip (m-n) : bs) of
+                (as,bs) -> (skip n as,skip n bs)
+        EQ -> case loop as bs of
+                (as,bs) -> (skip n as,skip m bs)
+        GT -> case loop (Skip (n-m) : as) bs of
+                (as,bs) -> (skip m as,skip m bs)
+    loop (Skip n : as) (Change m s2 : bs) =
+      case compare n m of
+        LT -> case loop as (Change (m-n) s2 : bs) of
+                (as,bs) -> (skip (length s2) as,change n [] bs)
+        EQ -> case loop as bs of
+                (as,bs) -> (skip (length s2) as,change m s2 bs)
+        GT -> case loop (Skip (n-m) : as) bs of
+                (as,bs) -> (skip (length s2) as,change n s2 bs)
+    loop (Change n s1 : as) (Skip m : bs) =
+      case compare n m of
+        LT -> case loop as (Skip (m-n) : bs) of
+                (as,bs) -> (change n s1 as,skip (length s1) bs)
+        EQ -> case loop as bs of
+                (as,bs) -> (change n s1 as,skip (length s1) bs)
+        GT -> case loop (Change (n-m) s1 : as) bs of
+                (as,bs) -> (change m [] as,skip (length s1) bs)
+    loop (Change n s1 : as) (Change m s2 : bs) =
+      case compare n m of
+        LT -> case loop as (Change (m-n) s2 : bs) of
+                (as,bs) -> (change 0 s1 as,bs)
+        EQ -> case loop as bs of
+                (as,bs) -> (change 0 s1 as,change 0 s2 bs)
+        GT -> case loop (Change (n-m) s1 : as) bs of
+                (as,bs) -> (as,change 0 s2 bs)
+
+    skip n (Skip m : as) = Skip (n+m) : as
+    skip n           as  = Skip n     : as
+
+    change n s (Change m s1 : as) = Change (n+m) (s++s1) : as
+    change n s                as  = Change n     s       : as

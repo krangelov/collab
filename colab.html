@@ -4,6 +4,7 @@
     </head>
     <body>
       <div id="editor"></div>
+      <input id="disconnect" type="checkbox"> Disconnect
       <style>
           .cm-editor {
               width: 500px;
@@ -66,11 +67,17 @@ function peerExtension(startVersion) {
       }
 
       async push() {
+        const disconnect = document.querySelector("#disconnect");
+        if (disconnect.checked) {
+            return;
+        }
+
         let updates = sendableUpdates(this.view.state);
         if (this.pushing || !updates.length) return
         this.pushing = true;
         let version = getSyncedVersion(this.view.state);
-        let res = await pushUpdates(version, updates);
+        updates = await pushUpdates(version, updates);
+        this.view.dispatch(receiveUpdates(this.view.state, updates));
         this.pushing = false;
         // Regardless of whether the push failed or new updates came in
         // while it was running, try again if there's updates remaining
@@ -79,6 +86,11 @@ function peerExtension(startVersion) {
       }
 
       async pull() {
+        const disconnect = document.querySelector("#disconnect");
+        if (disconnect.checked) {
+            return;
+        }
+
         while (!this.done) {
           let version = getSyncedVersion(this.view.state);
           let updates = await pullUpdates(version);
