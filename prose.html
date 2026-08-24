@@ -1,0 +1,181 @@
+<link rel=stylesheet href="https://prosemirror.net/css/editor.css">
+<body>
+    <div id=editor style="margin-bottom: 23px"></div>
+    <label><input id="disconnect" type="checkbox"> Disconnect</label>
+<div style="display: none" id="content">
+  <h3>Hello ProseMirror</h3>
+  <p>This is editable text. You can focus it and start typing.</p>
+  <p>To apply styling, you can select a piece of text and manipulate
+  its styling from the menu. The basic schema
+  supports <em>emphasis</em>, <strong>strong
+  text</strong>, <a href="http://marijnhaverbeke.nl/blog">links</a>, <code>code
+  font</code>, and images.</p>
+  <p>Block-level structure can be manipulated with key bindings (try
+  ctrl-shift-2 to create a level 2 heading, or enter in an empty
+  textblock to exit the parent block), or through the menu.</p>
+  <p>Try using the “list” item in the menu to wrap this paragraph in
+  a numbered list.</p>
+</div>
+
+    <script type="module">
+import {DOMParser, Node as ProseMirrorNode, Schema} from "https://esm.sh/prosemirror-model@1";
+import {EditorState} from "https://esm.sh/prosemirror-state@1";
+import {EditorView} from "https://esm.sh/prosemirror-view@1";
+import {Step} from "https://esm.sh/prosemirror-transform@1";
+import {schema as basicSchema} from "https://esm.sh/prosemirror-schema-basic@1";
+import {addListNodes} from "https://esm.sh/prosemirror-schema-list@1";
+import {exampleSetup} from "https://esm.sh/prosemirror-example-setup@1";
+import {collab, getVersion, receiveTransaction, sendableSteps} from "https://esm.sh/prosemirror-collab@1";
+
+// Mix the nodes from prosemirror-schema-list into the basic schema to
+// create a schema with list support.
+const mySchema = new Schema({
+  nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block"),
+  marks: basicSchema.spec.marks
+});
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function disconnected() {
+  return document.querySelector("#disconnect").checked;
+}
+
+function clientID() {
+  return "pm-" + Date.now().toString(16) + "-" + Math.floor(Math.random() * 0x100000000).toString(16);
+}
+
+async function request(body) {
+  const response =
+    await fetch("CollabService.fcgi", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+  if (!response.ok) throw new Error(await response.text());
+  return await response.json();
+}
+
+function startingDocument(doc) {
+  if (doc) return ProseMirrorNode.fromJSON(mySchema, doc);
+  return DOMParser.fromSchema(mySchema).parse(document.querySelector("#content"));
+}
+
+async function getDocument() {
+  return await request({type: "getDocument"});
+}
+
+async function pushUpdates(version, steps, clientID, doc) {
+  const data = await request({
+    type: "pushUpdates",
+    version,
+    clientID,
+    steps: steps.map(step => step.toJSON()),
+    doc: doc.toJSON()
+  });
+  return {
+    accepted: data.accepted,
+    version: data.version,
+    steps: data.steps.map(step => Step.fromJSON(mySchema, step)),
+    clientIDs: data.clientIDs
+  };
+}
+
+async function pullUpdates(version) {
+  const data = await request({type: "pullUpdates", version});
+  return {
+    steps: data.steps.map(step => Step.fromJSON(mySchema, step)),
+    clientIDs: data.clientIDs
+  };
+}
+
+async function addPeer() {
+  let {version, doc} = await getDocument();
+  let pushRunning = false;
+  let pullRunning = null;
+
+  let state = EditorState.create({
+    doc: startingDocument(doc),
+    plugins: [collab({version, clientID: clientID()})].concat(
+      exampleSetup({schema: mySchema})
+    )
+  });
+
+  let view = window.view = new EditorView(document.querySelector("#editor"), {
+    state,
+    dispatchTransaction(transaction) {
+      let newState = view.state.apply(transaction);
+      view.updateState(newState);
+      if (sendableSteps(newState)) push();
+    }
+  });
+
+  async function pull() {
+    if (pullRunning) return pullRunning;
+    pullRunning = (async () => {
+      let version = getVersion(view.state);
+      let {steps, clientIDs} = await pullUpdates(version);
+      if (disconnected() || version != getVersion(view.state)) return 0;
+      if (steps.length) {
+        view.dispatch(receiveTransaction(view.state, steps, clientIDs, {mapSelectionBackward: true}));
+      }
+      return steps.length;
+    })();
+    try {
+      return await pullRunning;
+    } finally {
+      pullRunning = null;
+    }
+  }
+
+  async function push() {
+    if (pushRunning || disconnected()) return;
+    let sendable = sendableSteps(view.state);
+    if (!sendable) return;
+    pushRunning = true;
+    try {
+      let pushed = await pushUpdates(sendable.version, sendable.steps, sendable.clientID, view.state.doc);
+      if (pushed.accepted && getVersion(view.state) == sendable.version) {
+        view.dispatch(receiveTransaction(view.state, pushed.steps, pushed.clientIDs, {mapSelectionBackward: true}));
+      } else if (!pushed.accepted) {
+        await pull();
+      }
+    } catch (err) {
+      console.error(err);
+      await delay(1000);
+    } finally {
+      pushRunning = false;
+    }
+    if (sendableSteps(view.state)) setTimeout(push, 100);
+  }
+
+  async function pullLoop() {
+    for (;;) {
+      if (disconnected()) {
+        await delay(250);
+        continue;
+      }
+      try {
+        let pulled = await pull();
+        if (!pulled) await delay(250);
+        if (sendableSteps(view.state)) push();
+      } catch (err) {
+        console.error(err);
+        await delay(1000);
+      }
+    }
+  }
+
+  document.querySelector("#disconnect").addEventListener("change", () => {
+    if (!disconnected()) push();
+  });
+  pullLoop();
+}
+
+addPeer().catch(err => {
+  console.error(err);
+  document.querySelector("#editor").textContent = err.message;
+});
+    </script>
+</body>
