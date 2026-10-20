@@ -35,7 +35,7 @@ serverMain stateRef rq = do
                                 return (pullUpdates version)
 
     fetchHTML = do
-      s <- readFile "colab.html"
+      s <- readFile "collab.html"
       return
         (Response
            { rspCode = 200
